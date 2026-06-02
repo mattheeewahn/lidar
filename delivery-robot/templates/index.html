@@ -1,0 +1,559 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>배달로봇 - SLAM 네비게이션</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, 'Noto Sans KR', sans-serif;
+            background: #0f0f1a;
+            color: #e0e0e0;
+            min-height: 100vh;
+        }
+        .header {
+            background: #1a1a2e;
+            padding: 15px 30px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-bottom: 1px solid #2a2a4a;
+        }
+        .header h1 { color: #00d4ff; font-size: 20px; }
+        .status-badge {
+            padding: 6px 16px;
+            border-radius: 20px;
+            font-size: 13px;
+            font-weight: bold;
+        }
+        .status-manual { background: #1b5e20; color: #a5d6a7; }
+        .status-mapping { background: #e65100; color: #ffcc02; }
+        .status-navigating { background: #0d47a1; color: #90caf9; }
+
+        .main {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+            padding: 20px;
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+
+        .panel {
+            background: #1a1a2e;
+            border-radius: 12px;
+            padding: 20px;
+            border: 1px solid #2a2a4a;
+        }
+        .panel h2 {
+            font-size: 16px;
+            color: #00d4ff;
+            margin-bottom: 15px;
+            padding-bottom: 8px;
+            border-bottom: 1px solid #2a2a4a;
+        }
+
+        /* 카메라 */
+        .camera-feed {
+            width: 100%;
+            border-radius: 8px;
+            background: #000;
+            aspect-ratio: 4/3;
+        }
+
+        /* 지도 */
+        .map-container {
+            position: relative;
+            width: 100%;
+            aspect-ratio: 1;
+            background: #000;
+            border-radius: 8px;
+            overflow: hidden;
+            cursor: crosshair;
+        }
+        .map-container img {
+            width: 100%;
+            height: 100%;
+            object-fit: contain;
+        }
+        .map-placeholder {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            width: 100%;
+            height: 100%;
+            color: #666;
+            font-size: 14px;
+            text-align: center;
+            padding: 20px;
+        }
+        .click-marker {
+            position: absolute;
+            width: 16px;
+            height: 16px;
+            background: rgba(255, 0, 0, 0.7);
+            border: 2px solid #ff0000;
+            border-radius: 50%;
+            transform: translate(-50%, -50%);
+            pointer-events: none;
+            animation: pulse 1s infinite;
+        }
+        @keyframes pulse {
+            0%, 100% { transform: translate(-50%, -50%) scale(1); opacity: 1; }
+            50% { transform: translate(-50%, -50%) scale(1.5); opacity: 0.5; }
+        }
+
+        /* 컨트롤 */
+        .controls-grid {
+            display: grid;
+            grid-template-areas:
+                ". up ."
+                "left stop right"
+                ". down .";
+            gap: 8px;
+            max-width: 250px;
+            margin: 0 auto 20px;
+        }
+        .ctrl-btn {
+            width: 70px;
+            height: 70px;
+            border: none;
+            border-radius: 10px;
+            font-size: 22px;
+            cursor: pointer;
+            background: #16213e;
+            color: #e0e0e0;
+            border: 2px solid #0f3460;
+            transition: all 0.1s;
+            user-select: none;
+        }
+        .ctrl-btn:active { background: #00d4ff; color: #1a1a2e; transform: scale(0.95); }
+        .ctrl-btn.stop-btn { background: #b71c1c; border-color: #e53935; grid-area: stop; }
+        [data-dir="up"] { grid-area: up; }
+        [data-dir="down"] { grid-area: down; }
+        [data-dir="left"] { grid-area: left; }
+        [data-dir="right"] { grid-area: right; }
+
+        /* 버튼 */
+        .btn {
+            padding: 10px 20px;
+            border: none;
+            border-radius: 8px;
+            font-size: 14px;
+            font-weight: bold;
+            cursor: pointer;
+            transition: all 0.2s;
+            margin: 5px;
+        }
+        .btn-primary { background: #00d4ff; color: #1a1a2e; }
+        .btn-primary:hover { background: #00b8e6; }
+        .btn-danger { background: #e53935; color: white; }
+        .btn-danger:hover { background: #c62828; }
+        .btn-warning { background: #ff9800; color: #1a1a2e; }
+        .btn-warning:hover { background: #f57c00; }
+        .btn-secondary { background: #455a64; color: white; }
+        .btn-secondary:hover { background: #37474f; }
+        .btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+        /* 속도 */
+        .speed-row {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 15px;
+        }
+        .speed-row input { flex: 1; }
+
+        /* 매핑 진행바 */
+        .progress-bar {
+            width: 100%;
+            height: 8px;
+            background: #2a2a4a;
+            border-radius: 4px;
+            overflow: hidden;
+            margin: 10px 0;
+        }
+        .progress-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #00d4ff, #00ff88);
+            transition: width 0.3s;
+        }
+
+        /* 모드 탭 */
+        .mode-tabs {
+            display: flex;
+            gap: 5px;
+            margin-bottom: 20px;
+        }
+        .mode-tab {
+            flex: 1;
+            padding: 10px;
+            border: 2px solid #2a2a4a;
+            background: transparent;
+            color: #aaa;
+            border-radius: 8px;
+            font-size: 13px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        .mode-tab.active {
+            border-color: #00d4ff;
+            color: #00d4ff;
+            background: rgba(0, 212, 255, 0.1);
+        }
+
+        .info-text {
+            font-size: 12px;
+            color: #888;
+            margin-top: 10px;
+            line-height: 1.6;
+        }
+
+        .nav-info {
+            margin-top: 15px;
+            padding: 10px;
+            background: #0f0f1a;
+            border-radius: 8px;
+            font-size: 13px;
+        }
+        .nav-info p { margin: 4px 0; }
+
+        .emergency-btn {
+            position: fixed;
+            bottom: 30px;
+            right: 30px;
+            padding: 20px 40px;
+            background: #ff0000;
+            color: white;
+            border: none;
+            border-radius: 50px;
+            font-size: 18px;
+            font-weight: bold;
+            cursor: pointer;
+            box-shadow: 0 4px 20px rgba(255, 0, 0, 0.4);
+            z-index: 1000;
+        }
+        .emergency-btn:active { transform: scale(0.95); }
+
+        .mapping-controls {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            flex-wrap: wrap;
+        }
+
+        @media (max-width: 900px) {
+            .main { grid-template-columns: 1fr; }
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>🤖 배달로봇 네비게이션</h1>
+        <span class="status-badge status-manual" id="statusBadge">수동 모드</span>
+    </div>
+
+    <div class="main">
+        <!-- 좌측: 카메라 + 조종 -->
+        <div>
+            <div class="panel">
+                <h2>📷 카메라</h2>
+                <img class="camera-feed" src="/video_feed" alt="카메라 피드">
+            </div>
+
+            <div class="panel" style="margin-top: 20px;">
+                <h2>🎮 수동 조종</h2>
+                <div class="speed-row">
+                    <span>속도:</span>
+                    <input type="range" id="speedSlider" min="50" max="255" value="150">
+                    <span id="speedValue">150</span>
+                </div>
+                <div class="controls-grid" id="manualControls">
+                    <button class="ctrl-btn" data-dir="up" data-cmd="W">▲</button>
+                    <button class="ctrl-btn" data-dir="left" data-cmd="A">◄</button>
+                    <button class="ctrl-btn ctrl-btn stop-btn" data-cmd="Q">■</button>
+                    <button class="ctrl-btn" data-dir="right" data-cmd="D">►</button>
+                    <button class="ctrl-btn" data-dir="down" data-cmd="S">▼</button>
+                </div>
+                <p class="info-text">키보드: W/A/S/D = 이동, Q = 정지</p>
+            </div>
+        </div>
+
+        <!-- 우측: 지도 + 네비게이션 -->
+        <div>
+            <div class="panel">
+                <h2>🗺️ SLAM 지도</h2>
+
+                <div class="mode-tabs">
+                    <button class="mode-tab active" id="tabMapping" onclick="switchTab('mapping')">
+                        📡 매핑
+                    </button>
+                    <button class="mode-tab" id="tabNav" onclick="switchTab('navigation')">
+                        🧭 네비게이션
+                    </button>
+                </div>
+
+                <!-- 매핑 패널 -->
+                <div id="mappingPanel">
+                    <div class="mapping-controls">
+                        <button class="btn btn-primary" id="btnStartMap" onclick="startMapping()">
+                            매핑 시작
+                        </button>
+                        <button class="btn btn-warning" id="btnStopMap" onclick="stopMapping()" disabled>
+                            매핑 중지
+                        </button>
+                        <span style="font-size:12px; color:#888;">
+                            매핑 중 로봇을 수동으로 움직여주세요
+                        </span>
+                    </div>
+                    <div class="progress-bar" id="progressBar" style="display:none;">
+                        <div class="progress-fill" id="progressFill" style="width:0%"></div>
+                    </div>
+                </div>
+
+                <!-- 네비게이션 패널 -->
+                <div id="navPanel" style="display:none;">
+                    <p class="info-text" id="navInstructions">
+                        지도에서 목적지를 클릭하면 로봇이 자동으로 이동합니다.
+                    </p>
+                    <div class="nav-info" id="navInfo" style="display:none;">
+                        <p>🎯 목적지: <span id="goalPos">-</span></p>
+                        <p>📍 웨이포인트: <span id="waypointProgress">-</span></p>
+                        <p>📊 상태: <span id="navState">대기중</span></p>
+                    </div>
+                    <button class="btn btn-danger" id="btnCancelNav" onclick="cancelNav()" style="display:none; margin-top:10px;">
+                        네비게이션 취소
+                    </button>
+                </div>
+
+                <!-- 지도 영역 -->
+                <div class="map-container" id="mapContainer" onclick="onMapClick(event)">
+                    <div class="map-placeholder" id="mapPlaceholder">
+                        매핑을 시작하면 여기에 지도가 표시됩니다.<br>
+                        로봇을 수동으로 이동시키면서 주변을 스캔하세요.
+                    </div>
+                    <img id="mapImage" style="display:none;" alt="SLAM Map">
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <button class="emergency-btn" onclick="emergencyStop()">🚨 비상정지</button>
+
+    <script>
+        // ─── 상태 ───
+        let currentMode = 'manual';
+        let currentTab = 'mapping';
+        let hasMap = false;
+        let mapRefreshInterval = null;
+        let navRefreshInterval = null;
+
+        const speedSlider = document.getElementById('speedSlider');
+        const speedValue = document.getElementById('speedValue');
+        speedSlider.oninput = () => speedValue.textContent = speedSlider.value;
+
+        // ─── 수동 조종 ───
+        document.querySelectorAll('.ctrl-btn').forEach(btn => {
+            const cmd = btn.dataset.cmd;
+            btn.addEventListener('mousedown', () => sendCmd(cmd));
+            btn.addEventListener('mouseup', () => sendCmd('Q'));
+            btn.addEventListener('mouseleave', () => sendCmd('Q'));
+            btn.addEventListener('touchstart', (e) => { e.preventDefault(); sendCmd(cmd); });
+            btn.addEventListener('touchend', (e) => { e.preventDefault(); sendCmd('Q'); });
+        });
+
+        // 키보드
+        const keyMap = { 'w': 'W', 'a': 'A', 's': 'S', 'd': 'D', 'q': 'Q',
+                         'W': 'W', 'A': 'A', 'S': 'S', 'D': 'D', 'Q': 'Q' };
+        const pressedKeys = new Set();
+
+        document.addEventListener('keydown', (e) => {
+            if (keyMap[e.key] && !pressedKeys.has(e.key)) {
+                pressedKeys.add(e.key);
+                sendCmd(keyMap[e.key]);
+            }
+        });
+        document.addEventListener('keyup', (e) => {
+            if (keyMap[e.key]) {
+                pressedKeys.delete(e.key);
+                if (pressedKeys.size === 0) sendCmd('Q');
+            }
+        });
+
+        function sendCmd(cmd) {
+            fetch('/control', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ cmd: cmd, speed: parseInt(speedSlider.value) })
+            }).catch(() => {});
+        }
+
+        // ─── 탭 전환 ───
+        function switchTab(tab) {
+            currentTab = tab;
+            document.getElementById('tabMapping').classList.toggle('active', tab === 'mapping');
+            document.getElementById('tabNav').classList.toggle('active', tab === 'navigation');
+            document.getElementById('mappingPanel').style.display = tab === 'mapping' ? 'block' : 'none';
+            document.getElementById('navPanel').style.display = tab === 'navigation' ? 'block' : 'none';
+        }
+
+        // ─── 매핑 ───
+        function startMapping() {
+            const duration = 120; // 2분 매핑
+
+            fetch('/start_mapping', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ duration: duration })
+            }).then(r => r.json()).then(data => {
+                if (data.error) { alert(data.error); return; }
+
+                document.getElementById('btnStartMap').disabled = true;
+                document.getElementById('btnStopMap').disabled = false;
+                document.getElementById('progressBar').style.display = 'block';
+                updateStatus('mapping', '매핑 중...');
+
+                // 주기적으로 맵 갱신
+                mapRefreshInterval = setInterval(refreshMap, 1000);
+
+                // 진행률 갱신
+                const progressInterval = setInterval(() => {
+                    fetch('/nav_status').then(r => r.json()).then(s => {
+                        document.getElementById('progressFill').style.width = s.mapping_progress + '%';
+                        if (s.mode !== 'mapping') {
+                            clearInterval(progressInterval);
+                            document.getElementById('btnStartMap').disabled = false;
+                            document.getElementById('btnStopMap').disabled = true;
+                            hasMap = true;
+                            updateStatus('manual', '수동 모드');
+                        }
+                    });
+                }, 1000);
+            });
+        }
+
+        function stopMapping() {
+            fetch('/stop_mapping', { method: 'POST' }).then(r => r.json()).then(() => {
+                document.getElementById('btnStartMap').disabled = false;
+                document.getElementById('btnStopMap').disabled = true;
+                hasMap = true;
+                updateStatus('manual', '수동 모드');
+            });
+        }
+
+        function refreshMap() {
+            fetch('/get_map').then(r => r.json()).then(data => {
+                const img = document.getElementById('mapImage');
+                const placeholder = document.getElementById('mapPlaceholder');
+                img.src = 'data:image/png;base64,' + data.image;
+                img.style.display = 'block';
+                placeholder.style.display = 'none';
+                hasMap = data.has_path || true;
+            }).catch(() => {});
+        }
+
+        // ─── 지도 클릭 → 네비게이션 ───
+        function onMapClick(event) {
+            if (currentTab !== 'navigation') return;
+            if (!hasMap) {
+                alert('먼저 매핑을 완료하세요!');
+                return;
+            }
+
+            const container = document.getElementById('mapContainer');
+            const rect = container.getBoundingClientRect();
+            const x = (event.clientX - rect.left) / rect.width * 600;
+            const y = (event.clientY - rect.top) / rect.height * 600;
+
+            // 클릭 마커 표시
+            const existingMarker = container.querySelector('.click-marker');
+            if (existingMarker) existingMarker.remove();
+            const marker = document.createElement('div');
+            marker.className = 'click-marker';
+            marker.style.left = event.clientX - rect.left + 'px';
+            marker.style.top = event.clientY - rect.top + 'px';
+            container.appendChild(marker);
+
+            // 네비게이션 시작
+            fetch('/navigate', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ x: x, y: y })
+            }).then(r => r.json()).then(data => {
+                if (data.error) {
+                    alert(data.error);
+                    marker.remove();
+                    return;
+                }
+
+                updateStatus('navigating', '자율주행 중...');
+                document.getElementById('navInfo').style.display = 'block';
+                document.getElementById('btnCancelNav').style.display = 'inline-block';
+                document.getElementById('goalPos').textContent =
+                    `(${data.goal.x.toFixed(1)}, ${data.goal.y.toFixed(1)})`;
+
+                // 상태 업데이트 시작
+                navRefreshInterval = setInterval(() => {
+                    fetch('/nav_status').then(r => r.json()).then(s => {
+                        document.getElementById('waypointProgress').textContent =
+                            `${s.waypoint_idx} / ${s.total_waypoints}`;
+                        document.getElementById('navState').textContent =
+                            s.reached_goal ? '✅ 도착!' : (s.running ? '이동 중...' : '대기');
+
+                        refreshMap();
+
+                        if (s.reached_goal || !s.running) {
+                            clearInterval(navRefreshInterval);
+                            updateStatus('manual', '수동 모드');
+                            document.getElementById('btnCancelNav').style.display = 'none';
+                        }
+                    });
+                }, 500);
+            });
+        }
+
+        function cancelNav() {
+            fetch('/stop', { method: 'POST' }).then(() => {
+                if (navRefreshInterval) clearInterval(navRefreshInterval);
+                updateStatus('manual', '수동 모드');
+                document.getElementById('navInfo').style.display = 'none';
+                document.getElementById('btnCancelNav').style.display = 'none';
+                const marker = document.querySelector('.click-marker');
+                if (marker) marker.remove();
+            });
+        }
+
+        // ─── 비상정지 ───
+        function emergencyStop() {
+            fetch('/stop', { method: 'POST' }).then(() => {
+                if (mapRefreshInterval) clearInterval(mapRefreshInterval);
+                if (navRefreshInterval) clearInterval(navRefreshInterval);
+                updateStatus('manual', '🚨 비상정지됨');
+            });
+        }
+
+        // ─── 상태 업데이트 ───
+        function updateStatus(mode, text) {
+            currentMode = mode;
+            const badge = document.getElementById('statusBadge');
+            badge.textContent = text;
+            badge.className = 'status-badge status-' + mode;
+
+            // 수동 조종 활성/비활성
+            const controls = document.getElementById('manualControls');
+            controls.style.opacity = mode === 'manual' ? '1' : '0.3';
+            controls.style.pointerEvents = mode === 'manual' ? 'auto' : 'none';
+        }
+
+        // ─── 초기 맵 로드 (이미 맵이 있다면) ───
+        fetch('/nav_status').then(r => r.json()).then(s => {
+            if (s.has_map) {
+                hasMap = true;
+                refreshMap();
+                mapRefreshInterval = setInterval(refreshMap, 2000);
+            }
+        }).catch(() => {});
+    </script>
+</body>
+</html>
