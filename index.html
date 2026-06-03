@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>배달로봇</title>
+    <style>
+        body { font-family: sans-serif; margin: 20px; background: #fff; }
+        h1 { font-size: 18px; }
+        .row { display: flex; gap: 20px; flex-wrap: wrap; }
+        .col { flex: 1; min-width: 300px; }
+        .camera-feed { width: 100%; background: #000; }
+        .map-container {
+            width: 400px; height: 400px;
+            background: #ddd; position: relative;
+            cursor: crosshair; border: 1px solid #999;
+        }
+        .map-container img { width: 100%; height: 100%; }
+        .controls { margin: 10px 0; }
+        .controls button {
+            width: 50px; height: 50px;
+            font-size: 18px; margin: 2px;
+        }
+        .btn { padding: 8px 16px; margin: 4px; cursor: pointer; }
+        .btn-stop { background: red; color: #fff; border: none; padding: 12px 24px; font-size: 16px; }
+        .status { margin: 10px 0; padding: 8px; background: #f0f0f0; }
+        .speed-row { margin: 10px 0; }
+        .speed-row input { width: 150px; }
+        .nav-info { margin: 10px 0; font-size: 13px; }
+        .click-marker {
+            position: absolute; width: 12px; height: 12px;
+            background: red; border-radius: 50%;
+            transform: translate(-50%, -50%); pointer-events: none;
+        }
+        .progress { width: 100%; height: 10px; background: #eee; margin: 5px 0; }
+        .progress-fill { height: 100%; background: #4caf50; width: 0%; }
+    </style>
+</head>
+<body>
+    <h1>배달로봇 컨트롤러</h1>
+    <div class="status" id="status">모드: 수동</div>
+
+    <div class="row">
+        <div class="col">
+            <h3>카메라</h3>
+            <img class="camera-feed" src="/video_feed" alt="camera">
+
+            <h3>조종 (W/A/S/D/Q)</h3>
+            <div class="speed-row">
+                속도: <input type="range" id="speed" min="50" max="255" value="150">
+                <span id="speedVal">150</span>
+            </div>
+            <div class="controls">
+                <div>
+                    <button data-cmd="W">▲</button>
+                </div>
+                <div>
+                    <button data-cmd="A">◄</button>
+                    <button data-cmd="Q">■</button>
+                    <button data-cmd="D">►</button>
+                </div>
+                <div>
+                    <button data-cmd="S">▼</button>
+                </div>
+            </div>
+        </div>
+
+        <div class="col">
+            <h3>SLAM 지도</h3>
+            <div>
+                <button class="btn" id="btnMap" onclick="startMapping()">매핑 시작</button>
+                <button class="btn" onclick="stopMapping()">매핑 중지</button>
+                <button class="btn" onclick="switchNav()">네비게이션 모드</button>
+            </div>
+            <div class="progress" id="prog"><div class="progress-fill" id="progFill"></div></div>
+            <div class="map-container" id="mapBox" onclick="mapClick(event)">
+                <img id="mapImg" src="" alt="" style="display:none;">
+            </div>
+            <div class="nav-info" id="navInfo"></div>
+        </div>
+    </div>
+
+    <br>
+    <button class="btn-stop" onclick="emergencyStop()">비상정지</button>
+
+    <script>
+        let navMode = false;
+        let hasMap = false;
+        let refreshTimer = null;
+
+        document.getElementById('speed').oninput = function() {
+            document.getElementById('speedVal').textContent = this.value;
+        };
+
+        // 조종 버튼
+        document.querySelectorAll('.controls button').forEach(btn => {
+            const cmd = btn.dataset.cmd;
+            btn.onmousedown = () => sendCmd(cmd);
+            btn.onmouseup = () => sendCmd('Q');
+            btn.onmouseleave = () => sendCmd('Q');
+            btn.ontouchstart = (e) => { e.preventDefault(); sendCmd(cmd); };
+            btn.ontouchend = (e) => { e.preventDefault(); sendCmd('Q'); };
+        });
+
+        // 키보드
+        document.addEventListener('keydown', (e) => {
+            const map = {w:'W',a:'A',s:'S',d:'D',q:'Q'};
+            if (map[e.key]) sendCmd(map[e.key]);
+        });
+        document.addEventListener('keyup', (e) => {
+            const map = {w:'W',a:'A',s:'S',d:'D',q:'Q'};
+            if (map[e.key]) sendCmd('Q');
+        });
+
+        function sendCmd(cmd) {
+            fetch('/control', {
+                method:'POST',
+                headers:{'Content-Type':'application/json'},
+                body: JSON.stringify({cmd: cmd, speed: parseInt(document.getElementById('speed').value)})
+            }).catch(()=>{});
+        }
+
+        function startMapping() {
+            fetch('/start_mapping', {
+                method:'POST',
+                headers:{'Content-Type':'application/json'},
+                body: JSON.stringify({duration: 120})
+            }).then(r=>r.json()).then(d => {
+                if (d.error) { alert(d.error); return; }
+                document.getElementById('status').textContent = '모드: 매핑 중...';
+                refreshTimer = setInterval(() => {
+                    refreshMap();
+                    fetch('/nav_status').then(r=>r.json()).then(s => {
+                        document.getElementById('progFill').style.width = s.mapping_progress + '%';
+                        if (s.mode !== 'mapping') {
+                            document.getElementById('status').textContent = '모드: 수동';
+                            hasMap = true;
+                        }
+                    });
+                }, 1000);
+            });
+        }
+
+        function stopMapping() {
+            fetch('/stop_mapping', {method:'POST'});
+            document.getElementById('status').textContent = '모드: 수동';
+            hasMap = true;
+        }
+
+        function refreshMap() {
+            fetch('/get_map').then(r=>r.json()).then(d => {
+                const img = document.getElementById('mapImg');
+                img.src = 'data:image/png;base64,' + d.image;
+                img.style.display = 'block';
+            }).catch(()=>{});
+        }
+
+        function switchNav() {
+            navMode = true;
+            document.getElementById('status').textContent = '모드: 네비게이션 (지도 클릭하세요)';
+            if (!refreshTimer) refreshTimer = setInterval(refreshMap, 1000);
+        }
+
+        function mapClick(e) {
+            if (!navMode || !hasMap) return;
+            const box = document.getElementById('mapBox');
+            const rect = box.getBoundingClientRect();
+            const x = (e.clientX - rect.left) / rect.width * 600;
+            const y = (e.clientY - rect.top) / rect.height * 600;
+
+            // 마커
+            const old = box.querySelector('.click-marker');
+            if (old) old.remove();
+            const mk = document.createElement('div');
+            mk.className = 'click-marker';
+            mk.style.left = (e.clientX - rect.left) + 'px';
+            mk.style.top = (e.clientY - rect.top) + 'px';
+            box.appendChild(mk);
+
+            fetch('/navigate', {
+                method:'POST',
+                headers:{'Content-Type':'application/json'},
+                body: JSON.stringify({x:x, y:y})
+            }).then(r=>r.json()).then(d => {
+                if (d.error) { alert(d.error); return; }
+                document.getElementById('status').textContent = '모드: 자율주행 중';
+                const navPoll = setInterval(() => {
+                    fetch('/nav_status').then(r=>r.json()).then(s => {
+                        document.getElementById('navInfo').textContent =
+                            '웨이포인트: ' + s.waypoint_idx + '/' + s.total_waypoints +
+                            (s.reached_goal ? ' - 도착!' : '');
+                        refreshMap();
+                        if (s.reached_goal || !s.running) {
+                            clearInterval(navPoll);
+                            document.getElementById('status').textContent = '모드: 수동';
+                        }
+                    });
+                }, 500);
+            });
+        }
+
+        function emergencyStop() {
+            fetch('/stop', {method:'POST'});
+            document.getElementById('status').textContent = '비상정지됨';
+            if (refreshTimer) { clearInterval(refreshTimer); refreshTimer = null; }
+        }
+
+        // 초기 맵 로드
+        fetch('/nav_status').then(r=>r.json()).then(s => {
+            if (s.has_map) { hasMap = true; refreshMap(); }
+        }).catch(()=>{});
+    </script>
+</body>
+</html>
